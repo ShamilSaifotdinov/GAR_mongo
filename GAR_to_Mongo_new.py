@@ -1,3 +1,4 @@
+import sys
 import time
 import xml.etree.ElementTree as ET
 import re, os
@@ -5,7 +6,7 @@ import pprint
 
 from pymongo import MongoClient
 
-def get_col(region_code, colName):
+def get_col(db_id, region_code, colName):
  
    # Provide the mongodb atlas url to connect python to mongodb using pymongo
    CONNECTION_STRING = "mongodb://localhost:27017/"
@@ -14,13 +15,14 @@ def get_col(region_code, colName):
    client = MongoClient(CONNECTION_STRING)
  
    # Create the database for our example (we will use the same database throughout the tutorial
-   return client[f'GAR{region_code}'][colName]
+   return client[f'GAR{db_id}_{region_code}'][colName]
 
 class parse_xml:
-    def __init__(self, path, region_code):
+    def __init__(self, path, region_code, db_id):
         startTime = time.time()
         self.region_code = region_code
         self.regionPath = f'{path}{region_code}\\'
+        self.db_id = db_id
 
         for elem in self.file_types.keys():
             for name in os.listdir(path):
@@ -40,13 +42,15 @@ class parse_xml:
         if self.file_types['AS_ADDHOUSE_TYPES']: self.addhouseTypes = self.parse_dict(path + self.file_types['AS_ADDHOUSE_TYPES'])
         if self.file_types['AS_APARTMENT_TYPES']: self.apartTypes = self.parse_dict(path + self.file_types['AS_APARTMENT_TYPES'])
         if self.file_types['AS_ROOM_TYPES']: self.roomTypes = self.parse_dict(path + self.file_types['AS_ROOM_TYPES'])
+
+        self.file_types['AS_OBJECT_LEVELS'] and self.parse_obj_levels(path + self.file_types['AS_OBJECT_LEVELS'])
         
         print(self.houseTypes)
         print(self.addhouseTypes)
         print(self.apartTypes)
         print(self.roomTypes)
 
-        # self.addr()
+        self.addr()
         # self.objs('stead')
         # self.objs('carplace')
         # self.objs('apartment')
@@ -86,10 +90,13 @@ class parse_xml:
 
         'AS_REESTR_OBJECTS': ''
     }
-    
+
+    def get_col(self, colName):
+        return get_col(self.db_id, self.region_code, colName)
+
     def reestr(self):
         if self.file_types['AS_REESTR_OBJECTS']:
-            reestrCol = get_col(self.region_code, 'reestr')
+            reestrCol = self.get_col('reestr')
             print("REESTR_OBJECTS:", reestrCol.drop())
 
             result = self.parse_reestr(self.regionPath + self.file_types['AS_REESTR_OBJECTS'])
@@ -98,12 +105,10 @@ class parse_xml:
             reestrCol.create_index('objectId', unique=True )
     
     def addr(self):
-        addrCol = get_col(self.region_code, 'addr')
+        addrCol = self.get_col('addr')
         print("ADDR_OBJ:", addrCol.drop())
 
         self.upd = {}
-
-        # self.file_types['AS_OBJECT_LEVELS'] and self.parse_obj_levels(path + self.file_types['AS_OBJECT_LEVELS'])
 
         self.file_types['AS_ADDR_OBJ'] and self.parse_addr_obj(self.regionPath + self.file_types['AS_ADDR_OBJ'])
         self.file_types['AS_ADM_HIERARCHY'] and self.parse_hierarchy(self.regionPath + self.file_types['AS_ADM_HIERARCHY'], 'adm')
@@ -118,7 +123,7 @@ class parse_xml:
         typeUp = type.upper()
         self.upd = {}
 
-        steadsCol = get_col(self.region_code, type)
+        steadsCol = self.get_col(type)
         print(f"{typeUp}S:", steadsCol.drop())
 
         self.file_types[f'AS_{typeUp}S'] and self.parse_objs(self.regionPath + self.file_types[f'AS_{typeUp}S'], typeUp)
@@ -163,13 +168,14 @@ class parse_xml:
         return arr
     
     def parse_obj_levels(self, path):
-        print("LEVELS:", self.db['levels'].drop())
+        addrCol = self.get_col('levels')
+        print("LEVELS:", addrCol.drop())
 
         tree = ET.iterparse(path)
         
         for event, elem in tree:
             if elem.tag == 'OBJECTLEVEL':
-                self.db['levels'].insert_one({
+                addrCol.insert_one({
                     "_id": int(elem.attrib['LEVEL']),
                     'name': elem.attrib['NAME']
                 })
@@ -179,19 +185,33 @@ class parse_xml:
         i = 0
         for event, elem in tree:
             i += 1
-            if elem.tag == 'OBJECT' and elem.attrib['ISACTUAL'] == "1" and elem.attrib['ISACTIVE'] == "1":
-                try:
-                    self.upd[int(elem.attrib['OBJECTID'])] = {
-                        "_id": int(elem.attrib['ID']),
-                        "objectId": int(elem.attrib['OBJECTID']),
-                        "name": elem.attrib['NAME'],
-                        "typename": elem.attrib['TYPENAME'],
-                        "level": int(elem.attrib['LEVEL'])
+            # if elem.tag == 'OBJECT' and elem.attrib['ISACTUAL'] == "1" and elem.attrib['ISACTIVE'] == "1":
+            try:
+                id = int(elem.attrib['OBJECTID'])
+
+                if id not in self.upd:
+                    self.upd[id] = {
+                        "objectId": id,
+                        "versions" : [],
+                        "OKATO" : [],
+                        "OKTMO" : [],
+                        "CODE" : [],
+                        "CadNum" : [],
                     }
-                except Exception as e:
-                    print(e)
+
+
+                self.upd[id]["versions"].append({
+                    "_id": int(elem.attrib['ID']),
+                    "name": elem.attrib['NAME'],
+                    "typename": elem.attrib['TYPENAME'],
+                    "level": int(elem.attrib['LEVEL']),
+                    "ISACTUAL" : elem.attrib['ISACTUAL'],
+                    'ISACTIVE' : elem.attrib['ISACTIVE'],
+                })
+            except Exception as e:
+                print("Error:", e)
             if (i % 100000) == 0: print("\tProcess:", i)
-        else: print("\tProcess:", i)           
+        else: print("\tProcess:", i)
     
     def parse_objs(self, path, type):
         print('parse_objs:', type)
@@ -234,14 +254,17 @@ class parse_xml:
         i = 0
         for event, elem in tree:
             i += 1
-            if elem.tag == 'PARAM' and elem.attrib['CHANGEIDEND'] == "0" and int(elem.attrib['OBJECTID']) in self.upd:
-                try:
-                    if elem.attrib['TYPEID'] == "6": self.upd[int(elem.attrib['OBJECTID'])]['OKATO'] = elem.attrib['VALUE']
-                    elif elem.attrib['TYPEID'] == "7":self.upd[int(elem.attrib['OBJECTID'])]['OKTMO'] = elem.attrib['VALUE']
-                    elif elem.attrib['TYPEID'] == "10": self.upd[int(elem.attrib['OBJECTID'])]['CODE'] = elem.attrib['VALUE']
-                    elif elem.attrib['TYPEID'] == "8": self.upd[int(elem.attrib['OBJECTID'])]['CadNum'] = elem.attrib['VALUE']
-                except Exception as e:
-                    print("Error:", e)
+            # if elem.tag == 'PARAM' and elem.attrib['CHANGEIDEND'] == "0" and int(elem.attrib['OBJECTID']) in self.upd:
+            try:
+                id = int(elem.attrib['OBJECTID'])
+                typeId = elem.attrib['TYPEID']
+
+                if typeId == "6":    self.upd[id]['OKATO'].append({ "CHANGEIDEND": elem.attrib['CHANGEIDEND'], "value": elem.attrib['VALUE']})
+                elif typeId == "7":  self.upd[id]['OKTMO'].append({ "CHANGEIDEND": elem.attrib['CHANGEIDEND'], "value": elem.attrib['VALUE']})
+                elif typeId == "10": self.upd[id]['CODE'].append({ "CHANGEIDEND": elem.attrib['CHANGEIDEND'], "value": elem.attrib['VALUE']})
+                elif typeId == "8":  self.upd[id]['CadNum'].append({ "CHANGEIDEND": elem.attrib['CHANGEIDEND'], "value": elem.attrib['VALUE']})
+            except Exception as e:
+                print("Error:", e)
             if event == "end":
                 elem.clear()
             if (i % 1000000) == 0: print("\tProcess:", i)
@@ -259,10 +282,15 @@ class parse_xml:
                     if ('PARENTOBJID' in elem.attrib.keys()): self.upd[int(elem.attrib['OBJECTID'])][f'{type}_parentId'] = int(elem.attrib['PARENTOBJID'])
                     self.upd[int(elem.attrib['OBJECTID'])][f'{type}_path'] = [int(e) for e in elem.attrib['PATH'].split('.')]
                 except Exception as e:
-                    print(e)
+                    print("Error:", e)
             if event == "end":
                 elem.clear()
             if (i % 1000000) == 0: print("\tProcess:", i)
         else: print("\tProcess:", i)
 
-parse_xml('\\gar-xml\\', '87')
+if __name__ == "__main__":
+    path = sys.argv[1]
+    region_code = sys.argv[2]
+    db_id = sys.argv[3]
+
+    parse_xml(path, region_code, db_id)
