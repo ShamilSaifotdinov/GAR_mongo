@@ -42,6 +42,8 @@ class parse_xml:
         if self.file_types['AS_ADDHOUSE_TYPES']: self.addhouseTypes = self.parse_dict(path + self.file_types['AS_ADDHOUSE_TYPES'])
         if self.file_types['AS_APARTMENT_TYPES']: self.apartTypes = self.parse_dict(path + self.file_types['AS_APARTMENT_TYPES'])
         if self.file_types['AS_ROOM_TYPES']: self.roomTypes = self.parse_dict(path + self.file_types['AS_ROOM_TYPES'])
+
+        self.file_types['AS_OBJECT_LEVELS'] and self.parse_obj_levels(path + self.file_types['AS_OBJECT_LEVELS'])
         
         print(self.houseTypes)
         print(self.addhouseTypes)
