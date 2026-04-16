@@ -1,3 +1,4 @@
+import sys
 import time
 import xml.etree.ElementTree as ET
 import re, os
@@ -5,7 +6,7 @@ import pprint
 
 from pymongo import MongoClient
 
-def get_col(region_code, colName):
+def get_col(db_id, region_code, colName):
  
    # Provide the mongodb atlas url to connect python to mongodb using pymongo
    CONNECTION_STRING = "mongodb://localhost:27017/"
@@ -14,13 +15,14 @@ def get_col(region_code, colName):
    client = MongoClient(CONNECTION_STRING)
  
    # Create the database for our example (we will use the same database throughout the tutorial
-   return client[f'GAR{region_code}'][colName]
+   return client[f'GAR{db_id}_{region_code}'][colName]
 
 class parse_xml:
-    def __init__(self, path, region_code):
+    def __init__(self, path, region_code, db_id):
         startTime = time.time()
         self.region_code = region_code
         self.regionPath = f'{path}{region_code}\\'
+        self.db_id = db_id
 
         for elem in self.file_types.keys():
             for name in os.listdir(path):
@@ -46,7 +48,7 @@ class parse_xml:
         print(self.apartTypes)
         print(self.roomTypes)
 
-        # self.addr()
+        self.addr()
         # self.objs('stead')
         # self.objs('carplace')
         # self.objs('apartment')
@@ -86,10 +88,13 @@ class parse_xml:
 
         'AS_REESTR_OBJECTS': ''
     }
-    
+
+    def get_col(self, colName):
+        return get_col(self.db_id, self.region_code, colName)
+
     def reestr(self):
         if self.file_types['AS_REESTR_OBJECTS']:
-            reestrCol = get_col(self.region_code, 'reestr')
+            reestrCol = self.get_col('reestr')
             print("REESTR_OBJECTS:", reestrCol.drop())
 
             result = self.parse_reestr(self.regionPath + self.file_types['AS_REESTR_OBJECTS'])
@@ -98,7 +103,7 @@ class parse_xml:
             reestrCol.create_index('objectId', unique=True )
     
     def addr(self):
-        addrCol = get_col(self.region_code, 'addr')
+        addrCol = self.get_col('addr')
         print("ADDR_OBJ:", addrCol.drop())
 
         self.upd = {}
@@ -118,7 +123,7 @@ class parse_xml:
         typeUp = type.upper()
         self.upd = {}
 
-        steadsCol = get_col(self.region_code, type)
+        steadsCol = self.get_col(type)
         print(f"{typeUp}S:", steadsCol.drop())
 
         self.file_types[f'AS_{typeUp}S'] and self.parse_objs(self.regionPath + self.file_types[f'AS_{typeUp}S'], typeUp)
@@ -163,13 +168,14 @@ class parse_xml:
         return arr
     
     def parse_obj_levels(self, path):
-        print("LEVELS:", self.db['levels'].drop())
+        addrCol = self.get_col('levels')
+        print("LEVELS:", addrCol.drop())
 
         tree = ET.iterparse(path)
         
         for event, elem in tree:
             if elem.tag == 'OBJECTLEVEL':
-                self.db['levels'].insert_one({
+                addrCol.insert_one({
                     "_id": int(elem.attrib['LEVEL']),
                     'name': elem.attrib['NAME']
                 })
@@ -189,9 +195,9 @@ class parse_xml:
                         "level": int(elem.attrib['LEVEL'])
                     }
                 except Exception as e:
-                    print(e)
+                    print("Error:", e)
             if (i % 100000) == 0: print("\tProcess:", i)
-        else: print("\tProcess:", i)           
+        else: print("\tProcess:", i)
     
     def parse_objs(self, path, type):
         print('parse_objs:', type)
@@ -259,10 +265,15 @@ class parse_xml:
                     if ('PARENTOBJID' in elem.attrib.keys()): self.upd[int(elem.attrib['OBJECTID'])][f'{type}_parentId'] = int(elem.attrib['PARENTOBJID'])
                     self.upd[int(elem.attrib['OBJECTID'])][f'{type}_path'] = [int(e) for e in elem.attrib['PATH'].split('.')]
                 except Exception as e:
-                    print(e)
+                    print("Error:", e)
             if event == "end":
                 elem.clear()
             if (i % 1000000) == 0: print("\tProcess:", i)
         else: print("\tProcess:", i)
 
-parse_xml('\\gar-xml\\', '87')
+if __name__ == "__main__":
+    path = sys.argv[1]
+    region_code = sys.argv[2]
+    db_id = sys.argv[3]
+
+    parse_xml(path, region_code, db_id)
